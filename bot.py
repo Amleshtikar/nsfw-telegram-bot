@@ -223,32 +223,82 @@ def main():
     print("Bot running...")
     app.run_polling()
 
-if __name__ == "__main__":
-    main()async def unmute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context):
+from telegram import Update, ChatPermissions
+from telegram.ext import ContextTypes
+
+# ---------- ADMIN CHECK ----------
+def is_admin(update: Update):
+    member = update.effective_chat.get_member(update.effective_user.id)
+    return member.status in ("administrator", "creator")
+
+# ---------- UNMUTE ----------
+async def unmute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
         return
+
+    if not update.message.reply_to_message:
+        await update.message.reply_text("❗ Kisi user ke message par reply karo")
+        return
+
     user = update.message.reply_to_message.from_user
+
     await context.bot.restrict_chat_member(
-        update.effective_chat.id,
-        user.id,
-        permissions=ChatPermissions(can_send_messages=True)
+        chat_id=update.effective_chat.id,
+        user_id=user.id,
+        permissions=ChatPermissions(
+            can_send_messages=True,
+            can_send_media_messages=True,
+            can_send_other_messages=True,
+            can_add_web_page_previews=True
+        )
     )
+
     await update.message.reply_text(f"🔊 Unmuted {user.first_name}")
 
+# ---------- BAN ----------
 async def ban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context):
+    if not is_admin(update):
         return
+
+    if not update.message.reply_to_message:
+        await update.message.reply_text("❗ Kisi user ke message par reply karo")
+        return
+
     user = update.message.reply_to_message.from_user
-    await context.bot.ban_chat_member(update.effective_chat.id, user.id)
+
+    await context.bot.ban_chat_member(
+        chat_id=update.effective_chat.id,
+        user_id=user.id
+    )
+
     await update.message.reply_text(f"🚫 Banned {user.first_name}")
 
+# ---------- UNBAN ----------
 async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context):
+    if not is_admin(update):
         return
+
+    if not context.args:
+        await update.message.reply_text("❗ Usage: /unban user_id")
+        return
+
     uid = int(context.args[0])
-    await context.bot.unban_chat_member(update.effective_chat.id, uid)
+
+    await context.bot.unban_chat_member(
+        chat_id=update.effective_chat.id,
+        user_id=uid
+    )
+
     await update.message.reply_text("♻️ User unbanned")
 
+# ---------- MAIN ----------
+def main():
+    # yahan tumhara Application + handlers hoga
+    pass
+
+# ---------- FILE END ----------
+if __name__ == "__main__":
+    main()
 # ================= SCANNERS =================
 async def scan_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
