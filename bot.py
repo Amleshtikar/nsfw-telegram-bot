@@ -169,9 +169,13 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    main()            "MALE_GENITALIA_EXPOSED",
-            "FEMALE_BREAST_EXPOSED"
-        ]:
+    NSFW_LABELS = [
+    "MALE_GENITALIA_EXPOSED",
+    "FEMALE_GENITALIA_EXPOSED",
+    "BUTTOCKS_EXPOSED",
+    "ANUS_EXPOSED",
+    "FEMALE_BREAST_EXPOSED",
+    ]
             return True
     return False
 
