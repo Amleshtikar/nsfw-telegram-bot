@@ -176,8 +176,6 @@ if __name__ == "__main__":
     "ANUS_EXPOSED",
     "FEMALE_BREAST_EXPOSED",
     ]
-            return True
-    return False
 
 def scan_video(path):
     cap = cv2.VideoCapture(path)
