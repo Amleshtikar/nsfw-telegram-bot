@@ -269,12 +269,11 @@ async def scan_off(update, context):
 
 # ---------- START BOT ----------
 
-app = ApplicationBuilder().token(BOT_TOKEN).build()
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
 
-app.add_handler(MessageHandler(filters.ALL, full_scan))
-app.add_handler(CommandHandler("approve", approve))
-app.add_handler(CommandHandler("unapprove", unapprove))
-app.add_handler(CommandHandler("scan_on", scan_on))
-app.add_handler(CommandHandler("scan_off", scan_off))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, scan_text))
 
-app.run_polling()
+    print("Bot started...")
+    app.run_polling()
