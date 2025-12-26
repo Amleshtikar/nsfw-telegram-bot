@@ -6,7 +6,7 @@ from datetime import timedelta
 from telegram import Update, ChatPermissions
 from telegram.constants import ChatMemberStatus
 from telegram.ext import (
-    Application,
+    ApplicationBuilder,
     CommandHandler,
     MessageHandler,
     ContextTypes,
