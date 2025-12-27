@@ -1,4 +1,5 @@
 import os
+import re
 from telegram import Update, ChatPermissions
 from telegram.ext import (
     Updater,
@@ -10,77 +11,128 @@ from telegram.ext import (
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# ===== DATA =====
 approved_users = set()
 warns = {}
 
-# ===== HELPERS =====
+NSFW_WORDS = [
+    "sex", "porn", "xxx", "adult", "nude", "fuck",
+    "chut", "lund", "boobs", "pussy", "randi"
+]
+
+# ---------- HELPERS ----------
+
 def is_admin(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     admins = context.bot.get_chat_administrators(chat_id)
     return user_id in [a.user.id for a in admins]
 
-def is_nsfw_contact(message):
-    if not message.contact:
+def contains_nsfw(text: str):
+    if not text:
         return False
-    name = (message.contact.first_name or "").lower()
-    nsfw_words = ["sex", "porn", "xxx", "adult"]
-    return any(w in name for w in nsfw_words)
+    text = text.lower()
+    return any(w in text for w in NSFW_WORDS)
 
-# ===== COMMANDS =====
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text("NSFW Contact Delete Bot Active ✅")
+def is_nsfw_message(msg):
+    # TEXT
+    if msg.text and contains_nsfw(msg.text):
+        return True
 
-def approve(update: Update, context: CallbackContext):
-    if not is_admin(update, context):
-        return
-    user_id = update.message.reply_to_message.from_user.id
-    approved_users.add(user_id)
-    update.message.reply_text("User approved ✅")
+    # CAPTION (photo/video/gif)
+    if msg.caption and contains_nsfw(msg.caption):
+        return True
 
-def unapprove(update: Update, context: CallbackContext):
-    if not is_admin(update, context):
-        return
-    user_id = update.message.reply_to_message.from_user.id
-    approved_users.discard(user_id)
-    update.message.reply_text("User unapproved ❌")
+    # STICKER
+    if msg.sticker:
+        emoji = msg.sticker.emoji or ""
+        return contains_nsfw(emoji)
 
-def stats(update: Update, context: CallbackContext):
-    update.message.reply_text(f"Warned users: {len(warns)}")
+    # CONTACT
+    if msg.contact:
+        name = (
+            (msg.contact.first_name or "") +
+            (msg.contact.last_name or "")
+        ).lower()
+        phone = msg.contact.phone_number or ""
+        return contains_nsfw(name) or len(phone) >= 10
 
-# ===== MESSAGE HANDLER =====
-def handle_message(update: Update, context: CallbackContext):
+    return False
+
+def warn_and_action(update, context):
     msg = update.message
     user_id = msg.from_user.id
     chat_id = msg.chat_id
 
+    msg.delete()
+
+    warns[user_id] = warns.get(user_id, 0) + 1
+    count = warns[user_id]
+
+    if count < 3:
+        context.bot.send_message(
+            chat_id,
+            f"⚠️ Warning {count}/2\nNSFW content not allowed"
+        )
+    else:
+        context.bot.restrict_chat_member(
+            chat_id,
+            user_id,
+            ChatPermissions(can_send_messages=False)
+        )
+        context.bot.send_message(
+            chat_id,
+            "🔇 You are muted for NSFW spam"
+        )
+
+# ---------- COMMANDS ----------
+
+def start(update: Update, context: CallbackContext):
+    update.message.reply_text("🛡 NSFW Admin Bot Active")
+
+def approve(update: Update, context: CallbackContext):
+    if not is_admin(update, context):
+        return
+    if not update.message.reply_to_message:
+        return
+    uid = update.message.reply_to_message.from_user.id
+    approved_users.add(uid)
+    update.message.reply_text("✅ User approved")
+
+def unapprove(update: Update, context: CallbackContext):
+    if not is_admin(update, context):
+        return
+    if not update.message.reply_to_message:
+        return
+    uid = update.message.reply_to_message.from_user.id
+    approved_users.discard(uid)
+    update.message.reply_text("❌ User unapproved")
+
+def warns_cmd(update: Update, context: CallbackContext):
+    update.message.reply_text(f"⚠️ Warned users: {len(warns)}")
+
+def resetwarn(update: Update, context: CallbackContext):
+    if not is_admin(update, context):
+        return
+    if not update.message.reply_to_message:
+        return
+    uid = update.message.reply_to_message.from_user.id
+    warns.pop(uid, None)
+    update.message.reply_text("♻️ Warn reset")
+
+# ---------- MESSAGE HANDLER ----------
+
+def handle_all(update: Update, context: CallbackContext):
+    msg = update.message
+    user_id = msg.from_user.id
+
     if user_id in approved_users:
         return
 
-    if is_nsfw_contact(msg):
-        msg.delete()
+    if is_nsfw_message(msg):
+        warn_and_action(update, context)
 
-        warns[user_id] = warns.get(user_id, 0) + 1
-        count = warns[user_id]
+# ---------- MAIN ----------
 
-        if count < 3:
-            context.bot.send_message(
-                chat_id,
-                f"⚠️ Warning {count}/2\nNSFW contact not allowed!"
-            )
-        else:
-            context.bot.restrict_chat_member(
-                chat_id,
-                user_id,
-                ChatPermissions(can_send_messages=False),
-            )
-            context.bot.send_message(
-                chat_id,
-                "🔇 You are muted (NSFW contact spam)"
-            )
-
-# ===== MAIN =====
 def main():
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
@@ -88,9 +140,10 @@ def main():
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("approve", approve))
     dp.add_handler(CommandHandler("unapprove", unapprove))
-    dp.add_handler(CommandHandler("stats", stats))
+    dp.add_handler(CommandHandler("warns", warns_cmd))
+    dp.add_handler(CommandHandler("resetwarn", resetwarn))
 
-    dp.add_handler(MessageHandler(Filters.contact, handle_message))
+    dp.add_handler(MessageHandler(Filters.all, handle_all))
 
     updater.start_polling()
     updater.idle()
