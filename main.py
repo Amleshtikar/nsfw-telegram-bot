@@ -16,19 +16,21 @@ from telegram.ext import (
     CallbackContext
 )
 
-# ========= CONFIG =========
+# ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SE_USER = os.getenv("SE_USER")
 SE_SECRET = os.getenv("SE_SECRET")
 
-MUTE_TIME = 300  # 5 minutes
+MUTE_TIME = 300
 
 NSFW_WORDS = [
     "sex","porn","xxx","nude","adult",
     "fuck","chut","lund","boobs","pussy","randi"
 ]
 
-# ========= DATABASE =========
+BIO_LINK_KEYS = ["http", "https", "t.me", "telegram.me", "@", ".com", ".in"]
+
+# ================= DATABASE =================
 db = sqlite3.connect("data.db", check_same_thread=False)
 cur = db.cursor()
 
@@ -41,21 +43,25 @@ CREATE TABLE IF NOT EXISTS warns (
 )
 """)
 
+# bio_ok = 1 → approve time pe bio clean
+# bio_ok = 0 → approve time pe bio me link tha
 cur.execute("""
 CREATE TABLE IF NOT EXISTS approved (
     chat_id INTEGER,
     user_id INTEGER,
+    bio_ok INTEGER,
     PRIMARY KEY (chat_id, user_id)
 )
 """)
 db.commit()
 
-# ========= HELPERS =========
+# ================= HELPERS =================
+def safe_name(user):
+    return user.full_name.replace("<", "").replace(">", "")
+
 def is_admin(update, context):
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    admins = context.bot.get_chat_administrators(chat_id)
-    return user_id in [a.user.id for a in admins]
+    admins = context.bot.get_chat_administrators(update.effective_chat.id)
+    return update.effective_user.id in [a.user.id for a in admins]
 
 def contains_nsfw(text):
     if not text:
@@ -63,12 +69,38 @@ def contains_nsfw(text):
     text = text.lower()
     return any(w in text for w in NSFW_WORDS)
 
+def has_link_in_bio(context, user_id):
+    try:
+        bio = (context.bot.get_chat(user_id).bio or "").lower()
+        return any(k in bio for k in BIO_LINK_KEYS)
+    except:
+        return False
+
 def is_approved(chat_id, user_id):
     cur.execute(
         "SELECT 1 FROM approved WHERE chat_id=? AND user_id=?",
         (chat_id, user_id)
     )
     return cur.fetchone() is not None
+
+def auto_unapprove_if_bio_link(context, chat_id, user_id):
+    cur.execute(
+        "SELECT bio_ok FROM approved WHERE chat_id=? AND user_id=?",
+        (chat_id, user_id)
+    )
+    row = cur.fetchone()
+    if not row:
+        return
+
+    bio_ok_at_approve = row[0]
+
+    # approved time pe bio clean tha, baad me link add hua
+    if bio_ok_at_approve == 1 and has_link_in_bio(context, user_id):
+        cur.execute(
+            "DELETE FROM approved WHERE chat_id=? AND user_id=?",
+            (chat_id, user_id)
+        )
+        db.commit()
 
 def add_warn(chat_id, user_id):
     cur.execute(
@@ -111,8 +143,8 @@ def is_porn_image(url):
                 "api_user": SE_USER,
                 "api_secret": SE_SECRET
             },
-            files={"media": requests.get(url, timeout=15).content},
-            timeout=20
+            files={"media": requests.get(url, timeout=10).content},
+            timeout=15
         )
         nud = r.json().get("nudity", {})
         score = nud.get("sexual_activity", 0) + nud.get("sexual_display", 0)
@@ -120,56 +152,69 @@ def is_porn_image(url):
     except:
         return False
 
-# ========= PUNISH =========
+# ================= ACTION =================
 def punish(update, context):
     msg = update.message
-    chat_id = msg.chat.id
-    user_id = msg.from_user.id
+    cid = msg.chat.id
+    uid = msg.from_user.id
 
     try:
         msg.delete()
     except:
         pass
 
-    count = add_warn(chat_id, user_id)
+    count = add_warn(cid, uid)
 
     if count < 3:
         context.bot.send_message(
-            chat_id,
-            f"⚠️ Warning {count}/2\nNSFW content not allowed"
+            cid,
+            f"⚠️ Warning {count}/2\n"
+            f"👤 {safe_name(msg.from_user)}\n"
+            f"🆔 {uid}"
         )
     else:
         context.bot.restrict_chat_member(
-            chat_id,
-            user_id,
+            cid,
+            uid,
             ChatPermissions(can_send_messages=False)
         )
         context.bot.send_message(
-            chat_id,
-            "🔇 Muted for 5 minutes"
+            cid,
+            f"🔇 Muted 5 minutes\n"
+            f"👤 {safe_name(msg.from_user)}\n"
+            f"🆔 {uid}"
         )
         context.job_queue.run_once(
             unmute_job,
             MUTE_TIME,
-            context={"chat_id": chat_id, "user_id": user_id}
+            context={"chat_id": cid, "user_id": uid}
         )
 
 def unmute_job(context):
-    data = context.job.context
+    d = context.job.context
     context.bot.restrict_chat_member(
-        data["chat_id"],
-        data["user_id"],
+        d["chat_id"],
+        d["user_id"],
         ChatPermissions(can_send_messages=True)
     )
-    reset_warn(data["chat_id"], data["user_id"])
+    reset_warn(d["chat_id"], d["user_id"])
 
-# ========= COMMANDS =========
+# ================= COMMANDS =================
 def start(update, context):
     update.message.reply_text("🛡 NSFW Protection Bot Active")
 
 def panel(update, context):
     if not is_admin(update, context):
         return
+
+    if not update.message.reply_to_message:
+        update.message.reply_text("Reply to user message then /panel")
+        return
+
+    user = update.message.reply_to_message.from_user
+    context.user_data["uid"] = user.id
+    context.user_data["name"] = user.full_name
+
     kb = [
         [
             InlineKeyboardButton("✅ Approve", callback_data="approve"),
@@ -179,8 +224,11 @@ def panel(update, context):
             InlineKeyboardButton("♻ Reset Warn", callback_data="reset")
         ]
     ]
+
     update.message.reply_text(
-        "⚙ Admin Panel\n(Reply to user message)",
+        f"⚙ Admin Panel\n\n"
+        f"👤 Name: {user.full_name}\n"
+        f"🆔 ID: {user.id}",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
@@ -188,19 +236,25 @@ def buttons(update, context):
     q = update.callback_query
     q.answer()
 
-    if not q.message.reply_to_message:
+    cid = q.message.chat.id
+    uid = context.user_data.get("uid")
+    name = context.user_data.get("name", "Unknown")
+
+    if not uid:
+        q.edit_message_text("Panel expired")
         return
 
-    cid = q.message.chat.id
-    uid = q.message.reply_to_message.from_user.id
-
     if q.data == "approve":
+        bio_ok = 0 if has_link_in_bio(context, uid) else 1
         cur.execute(
-            "INSERT OR IGNORE INTO approved VALUES (?,?)",
-            (cid, uid)
+            "INSERT OR REPLACE INTO approved VALUES (?,?,?)",
+            (cid, uid, bio_ok)
         )
         db.commit()
-        q.edit_message_text("✅ User approved")
+        q.edit_message_text(
+            f"✅ Approved\n👤 {name}\n🆔 {uid}\n"
+            f"🔗 Bio clean: {'YES' if bio_ok else 'NO'}"
+        )
 
     elif q.data == "unapprove":
         cur.execute(
@@ -208,58 +262,51 @@ def buttons(update, context):
             (cid, uid)
         )
         db.commit()
-        q.edit_message_text("❌ User unapproved")
+        q.edit_message_text(f"❌ Unapproved\n👤 {name}\n🆔 {uid}")
 
     elif q.data == "reset":
         reset_warn(cid, uid)
-        q.edit_message_text("♻ Warn reset")
+        q.edit_message_text(f"♻ Warn Reset\n👤 {name}\n🆔 {uid}")
 
-# ========= MAIN HANDLER =========
+# ================= MAIN HANDLER =================
 def handler(update, context):
     msg = update.message
     cid = msg.chat.id
     uid = msg.from_user.id
 
+    auto_unapprove_if_bio_link(context, cid, uid)
+
+    if not is_approved(cid, uid) and has_link_in_bio(context, uid):
+        try:
+            msg.delete()
+        except:
+            pass
+        context.bot.send_message(
+            cid,
+            f"⚠️ Message removed\n"
+            f"👤 {safe_name(msg.from_user)}\n"
+            f"🆔 {uid}\n"
+            f"Remove link from bio then chat safely"
+        )
+        return
+
     if is_approved(cid, uid):
         return
 
-    # TEXT / CAPTION
     if (msg.text and contains_nsfw(msg.text)) or \
        (msg.caption and contains_nsfw(msg.caption)):
         punish(update, context)
         return
 
-    # PHOTO (AI)
     if msg.photo:
-        url = get_file_url(context.bot, msg.photo[-1].file_id)
-        if is_porn_image(url):
+        if is_porn_image(get_file_url(context.bot, msg.photo[-1].file_id)):
             punish(update, context)
         return
 
-    # GIF → ALWAYS DELETE
-    if msg.animation:
-        punish(update, context)
-        return
-
-    # VIDEO → ALWAYS DELETE
-    if msg.video:
-        punish(update, context)
-        return
-
-    # STICKER
-    if msg.sticker:
-        if msg.sticker.is_animated or msg.sticker.is_video:
-            punish(update, context)
-            return
-        if contains_nsfw(msg.sticker.emoji or ""):
-            punish(update, context)
-            return
-
-    # CONTACT
-    if msg.contact:
+    if msg.video or msg.animation or msg.sticker or msg.contact:
         punish(update, context)
 
-# ========= RUN =========
+# ================= RUN =================
 def main():
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
