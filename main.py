@@ -1,99 +1,99 @@
 import os
-from flask import Flask, request
 from telegram import Update, ChatPermissions
 from telegram.ext import (
-    Application,
+    Updater,
     CommandHandler,
     MessageHandler,
-    ContextTypes,
-    filters,
+    Filters,
+    CallbackContext,
 )
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-app = Flask(__name__)
-
-# ---------------- DATA ----------------
+# ===== DATA =====
 approved_users = set()
 warns = {}
 
-NSFW_KEYWORDS = [
-    "porn", "sex", "xnxx", "xvideo", "xxx", "nude"
-]
+# ===== HELPERS =====
+def is_admin(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    admins = context.bot.get_chat_administrators(chat_id)
+    return user_id in [a.user.id for a in admins]
 
-# ---------------- BOT ----------------
-telegram_app = Application.builder().token(BOT_TOKEN).build()
+def is_nsfw_contact(message):
+    if not message.contact:
+        return False
+    name = (message.contact.first_name or "").lower()
+    nsfw_words = ["sex", "porn", "xxx", "adult"]
+    return any(w in name for w in nsfw_words)
 
+# ===== COMMANDS =====
+def start(update: Update, context: CallbackContext):
+    update.message.reply_text("NSFW Contact Delete Bot Active ✅")
 
-# ---------- COMMANDS ----------
-async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id in context.bot_data.get("admins", set()):
-        if context.args:
-            uid = int(context.args[0])
-            approved_users.add(uid)
-            await update.message.reply_text("✅ User approved")
+def approve(update: Update, context: CallbackContext):
+    if not is_admin(update, context):
+        return
+    user_id = update.message.reply_to_message.from_user.id
+    approved_users.add(user_id)
+    update.message.reply_text("User approved ✅")
 
+def unapprove(update: Update, context: CallbackContext):
+    if not is_admin(update, context):
+        return
+    user_id = update.message.reply_to_message.from_user.id
+    approved_users.discard(user_id)
+    update.message.reply_text("User unapproved ❌")
 
-async def unapprove(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.args:
-        uid = int(context.args[0])
-        approved_users.discard(uid)
-        await update.message.reply_text("❌ User unapproved")
+def stats(update: Update, context: CallbackContext):
+    update.message.reply_text(f"Warned users: {len(warns)}")
 
-
-# ---------- MESSAGE HANDLER ----------
-async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ===== MESSAGE HANDLER =====
+def handle_message(update: Update, context: CallbackContext):
     msg = update.message
     user_id = msg.from_user.id
+    chat_id = msg.chat_id
 
-    # ignore admins
-    if msg.from_user.is_bot:
+    if user_id in approved_users:
         return
 
-    # check NSFW
-    text = (msg.text or "").lower()
-    if any(word in text for word in NSFW_KEYWORDS):
+    if is_nsfw_contact(msg):
+        msg.delete()
 
-        if user_id in approved_users:
-            return
-
-        # delete msg
-        await msg.delete()
-
-        # warn system
         warns[user_id] = warns.get(user_id, 0) + 1
+        count = warns[user_id]
 
-        if warns[user_id] >= 3:
-            await context.bot.restrict_chat_member(
-                chat_id=msg.chat_id,
-                user_id=user_id,
-                permissions=ChatPermissions(can_send_messages=False),
-            )
-            await msg.chat.send_message(
-                f"🔇 User muted (3 NSFW warnings)"
+        if count < 3:
+            context.bot.send_message(
+                chat_id,
+                f"⚠️ Warning {count}/2\nNSFW contact not allowed!"
             )
         else:
-            await msg.chat.send_message(
-                f"⚠️ Warning {warns[user_id]}/3 : NSFW not allowed"
+            context.bot.restrict_chat_member(
+                chat_id,
+                user_id,
+                ChatPermissions(can_send_messages=False),
+            )
+            context.bot.send_message(
+                chat_id,
+                "🔇 You are muted (NSFW contact spam)"
             )
 
+# ===== MAIN =====
+def main():
+    updater = Updater(BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
 
-# ---------- ADD HANDLERS ----------
-telegram_app.add_handler(CommandHandler("approve", approve))
-telegram_app.add_handler(CommandHandler("unapprove", unapprove))
-telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_message))
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("approve", approve))
+    dp.add_handler(CommandHandler("unapprove", unapprove))
+    dp.add_handler(CommandHandler("stats", stats))
 
+    dp.add_handler(MessageHandler(Filters.contact, handle_message))
 
-# ---------- WEBHOOK ----------
-@app.route("/webhook", methods=["POST"])
-async def webhook():
-    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    await telegram_app.process_update(update)
-    return "ok"
+    updater.start_polling()
+    updater.idle()
 
-
-# ---------- START ----------
 if __name__ == "__main__":
-    telegram_app.bot_data["admins"] = set()  # add admin IDs if needed
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    main()
