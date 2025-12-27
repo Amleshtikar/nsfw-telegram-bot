@@ -2,6 +2,9 @@ import os, sqlite3, requests
 from telegram import ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, CallbackQueryHandler, Filters
 
+# 🔐 bio system import
+from bio_guard import bio_guard, approve_cmd, unapprove_cmd
+
 # ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SE_USER = os.getenv("SE_USER")
@@ -20,11 +23,18 @@ PORN_EMOJIS = ["🍆","🍑","💦","🔥","🥵","😈","🍒"]
 db = sqlite3.connect("data.db", check_same_thread=False)
 cur = db.cursor()
 
-cur.execute("CREATE TABLE IF NOT EXISTS warns (chat_id INTEGER,user_id INTEGER,count INTEGER,PRIMARY KEY(chat_id,user_id))")
+cur.execute("""
+CREATE TABLE IF NOT EXISTS warns (
+    chat_id INTEGER,
+    user_id INTEGER,
+    count INTEGER,
+    PRIMARY KEY(chat_id,user_id)
+)
+""")
 db.commit()
 
 # ================= HELPERS =================
-def safe_name(u): 
+def safe_name(u):
     return u.full_name.replace("<","").replace(">","")
 
 def is_admin(ctx,cid,uid):
@@ -54,30 +64,16 @@ def is_porn_image(url):
 
 # ================= ADVANCED SCAN =================
 def is_porn_sticker(msg):
-    # emoji logic
     if msg.sticker.emoji and msg.sticker.emoji in PORN_EMOJIS:
         return True
-
-    # sticker set name logic
     if msg.sticker.set_name and contains_nsfw(msg.sticker.set_name.lower()):
         return True
-
-    # animated/video sticker → suspicious
-    if msg.sticker.is_animated or msg.sticker.is_video:
-        return True
-
-    return False
+    return False   # normal sticker SAFE
 
 def is_porn_gif(msg):
-    # text / emoji check
     if contains_nsfw(msg.caption or ""):
         return True
-
-    # size + duration heuristic
-    if msg.animation.file_size and msg.animation.file_size > 400000:
-        return True
-
-    return False
+    return False   # normal gif SAFE
 
 # ================= WARN / MUTE =================
 def add_warn(cid,uid):
@@ -122,7 +118,11 @@ def buttons(update,ctx):
 
 # ================= MAIN HANDLER =================
 def handler(update,ctx):
-    m=update.message
+    m = update.message
+
+    # 🔐 BIO + APPROVE SYSTEM (FIRST)
+    if bio_guard(update, ctx):
+        return
 
     if m.text or m.caption:
         if contains_nsfw(m.text or m.caption):
@@ -144,10 +144,15 @@ def handler(update,ctx):
 def main():
     up=Updater(BOT_TOKEN,use_context=True)
     dp=up.dispatcher
+
     dp.add_handler(CommandHandler("start",lambda u,c:u.message.reply_text("🛡 AI + Human Protection Active")))
+    dp.add_handler(CommandHandler("approve", approve_cmd))
+    dp.add_handler(CommandHandler("unapprove", unapprove_cmd))
     dp.add_handler(CallbackQueryHandler(buttons))
     dp.add_handler(MessageHandler(Filters.all,handler))
-    up.start_polling(); up.idle()
+
+    up.start_polling()
+    up.idle()
 
 if __name__=="__main__":
     main()
