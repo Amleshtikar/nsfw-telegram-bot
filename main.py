@@ -57,9 +57,9 @@ db.commit()
 def safe_name(user):
     return user.full_name.replace("<", "").replace(">", "")
 
-def is_admin(update, context):
-    admins = context.bot.get_chat_administrators(update.effective_chat.id)
-    return update.effective_user.id in [a.user.id for a in admins]
+def is_admin(context, chat_id, user_id):
+    admins = context.bot.get_chat_administrators(chat_id)
+    return user_id in [a.user.id for a in admins]
 
 def contains_nsfw(text):
     if not text:
@@ -101,6 +101,21 @@ def is_porn_image(url):
         return score >= 0.6
     except:
         return False
+
+def is_porn_sticker_or_gif(msg):
+    text = (msg.caption or "") + (msg.text or "")
+    if contains_nsfw(text):
+        return True
+
+    if msg.sticker:
+        if (msg.sticker.is_animated or msg.sticker.is_video) and msg.sticker.file_size:
+            return msg.sticker.file_size > 180000
+
+    if msg.animation:
+        if msg.animation.file_size:
+            return msg.animation.file_size > 250000
+
+    return False
 
 # ================= WARN / MUTE =================
 def add_warn(chat_id, user_id):
@@ -186,12 +201,15 @@ def unmute_job(context):
 # ================= CALLBACK =================
 def buttons(update, context):
     q = update.callback_query
+    cid = q.message.chat.id
     q.answer()
+
+    if not is_admin(context, cid, q.from_user.id):
+        q.answer("❌ Only admin can use this", show_alert=True)
+        return
 
     if q.data.startswith("unmute:"):
         uid = int(q.data.split(":")[1])
-        cid = q.message.chat.id
-
         context.bot.restrict_chat_member(
             cid, uid,
             ChatPermissions(can_send_messages=True)
@@ -204,7 +222,8 @@ def start(update, context):
     update.message.reply_text("🛡 NSFW Protection Bot Active")
 
 def approve(update, context):
-    if not is_admin(update, context): return
+    if not is_admin(context, update.effective_chat.id, update.effective_user.id):
+        return
     if not update.message.reply_to_message:
         update.message.reply_text("Reply to user message")
         return
@@ -218,12 +237,11 @@ def approve(update, context):
     )
     db.commit()
 
-    update.message.reply_text(
-        f"✅ Approved\n👤 {user.full_name}\n🆔 {user.id}"
-    )
+    update.message.reply_text(f"✅ Approved\n👤 {user.full_name}\n🆔 {user.id}")
 
 def unapprove(update, context):
-    if not is_admin(update, context): return
+    if not is_admin(context, update.effective_chat.id, update.effective_user.id):
+        return
     if not update.message.reply_to_message:
         update.message.reply_text("Reply to user message")
         return
@@ -235,9 +253,7 @@ def unapprove(update, context):
     )
     db.commit()
 
-    update.message.reply_text(
-        f"❌ Unapproved\n👤 {user.full_name}\n🆔 {user.id}"
-    )
+    update.message.reply_text(f"❌ Unapproved\n👤 {user.full_name}\n🆔 {user.id}")
 
 # ================= MAIN HANDLER =================
 def handler(update, context):
@@ -259,8 +275,11 @@ def handler(update, context):
             punish(update, context)
         return
 
-    # ❌ normal sticker/gif ignore
-    # ✅ sirf video pe warn
+    if msg.sticker or msg.animation:
+        if is_porn_sticker_or_gif(msg):
+            punish(update, context)
+        return
+
     if msg.video:
         punish(update, context)
 
